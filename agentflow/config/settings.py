@@ -73,7 +73,7 @@ def get_database_config() -> DatabaseSettings | None:
     config = load_config()
     db_config = config.get("database", {})
 
-    if not db_config.get("url"):
+    if not db_config.get("db_url"):
         return None
 
     return DatabaseSettings(**db_config)
@@ -87,10 +87,10 @@ def save_database_config(db_settings: DatabaseSettings) -> None:
     """
     config = load_config()
     config["database"] = {
-        "url": db_settings.db_url,
-        "schema": db_settings.db_schema,
-        "pool_size": db_settings.db_pool_size,
-        "max_overflow": db_settings.db_max_overflow,
+        "db_url": db_settings.db_url,
+        "db_schema": db_settings.db_schema,
+        "db_pool_size": db_settings.db_pool_size,
+        "db_max_overflow": db_settings.db_max_overflow,
     }
     save_config(config)
 
