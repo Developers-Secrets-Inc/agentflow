@@ -57,23 +57,25 @@ class Session(Base):
     )
 
     @classmethod
-    def create(cls, workspace_id: str, task: str) -> "Session":
+    async def create(cls, db: DatabaseSession, workspace_id: str, task: str) -> "Session":
         """Create a new session.
 
         Args:
+            db: Database session
             workspace_id: Workspace ID
             task: Task description
 
         Returns:
             The created Session instance
         """
-        return cls(
+        session = cls(
             id=generate_id(),
             workspace_id=workspace_id,
             task=task,
             status=SessionStatus.ACTIVE,
             started_at=datetime.utcnow(),
         )
+        return await db.add(session)
 
     @classmethod
     async def get_active(cls, db: DatabaseSession, workspace_id: str) -> "Session | None":
