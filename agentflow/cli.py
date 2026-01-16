@@ -6,6 +6,7 @@ from pathlib import Path
 
 import questionary
 import typer
+from sqlalchemy import select
 
 from agentflow.config import (
     config_exists,
@@ -17,7 +18,7 @@ from agentflow.config import (
 )
 from agentflow.config.database import DatabaseSettings, set_database_settings
 from agentflow.db.base import init_db, close_db
-from agentflow.entities import Workspace, Session
+from agentflow.entities import Workspace, Session, Commit
 from agentflow.db.session import DatabaseSession, get_db
 from agentflow.utils.id_generator import generate_id
 from agentflow.utils.state import (
@@ -25,7 +26,7 @@ from agentflow.utils.state import (
     set_current_session,
     clear_current_session,
 )
-from agentflow.utils.formatters import format_duration, format_timestamp
+from agentflow.utils.formatters import format_duration, format_relative_time, format_timestamp
 
 app = typer.Typer(help="AgentFlow - Git-like workflow management for AI agents")
 
@@ -37,6 +38,190 @@ app.add_typer(workspace_app, name="workspace")
 
 session_app = typer.Typer(help="Session management")
 app.add_typer(session_app, name="session")
+
+
+@app.command()
+def log(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of commits to show"),
+) -> None:
+    """Show commit history for the current workspace."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _log_sync(limit)
+
+
+def _log_sync(limit: int) -> None:
+    """Show log synchronously.
+
+    Args:
+        limit: Maximum number of commits to show
+    """
+    try:
+        asyncio.run(_log_async(limit))
+    except Exception as e:
+        typer.echo(f"[!] Failed to show log: {e}")
+        raise typer.Exit(1)
+
+
+async def _log_async(limit: int) -> None:
+    """Show log asynchronously.
+
+    Args:
+        limit: Maximum number of commits to show
+    """
+    # Check workspace is selected
+    workspace_id = get_current_workspace_id()
+    if not workspace_id:
+        typer.echo("[!] No workspace selected. Use 'agentflow workspace switch <name>' first.")
+        raise typer.Exit(1)
+
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Verify workspace exists
+        workspace = await Workspace.get_by_id(db_session, workspace_id)
+        if not workspace:
+            typer.echo("[!] Workspace not found in database. State may be corrupted.")
+            typer.echo("[!] Use 'agentflow workspace list' to see available workspaces.")
+            raise typer.Exit(1)
+
+        # Get commits
+        commits = await Commit.list_for_workspace(db_session, workspace_id, limit=limit)
+
+        if not commits:
+            typer.echo("[*] No commits found in this workspace.")
+            typer.echo("[*] Use 'agentflow session commit' to create your first commit.")
+            return
+
+        # Display commits
+        for commit in commits:
+            time_ago = format_relative_time(commit.created_at)
+            typer.echo(f"{commit.id} {commit.message} ({time_ago})")
+
+    await close_db()
+
+
+@app.command()
+def show(
+    commit_id: str = typer.Argument(..., help="Commit ID"),
+) -> None:
+    """Show detailed information about a commit."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _show_sync(commit_id)
+
+
+def _show_sync(commit_id: str) -> None:
+    """Show commit synchronously.
+
+    Args:
+        commit_id: Commit ID to show
+    """
+    try:
+        asyncio.run(_show_async(commit_id))
+    except Exception as e:
+        typer.echo(f"[!] Failed to show commit: {e}")
+        raise typer.Exit(1)
+
+
+async def _show_async(commit_id: str) -> None:
+    """Show commit asynchronously.
+
+    Args:
+        commit_id: Commit ID to show
+    """
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Try exact match first
+        commit = await Commit.get_by_id(db_session, commit_id)
+
+        # If not found, try prefix match
+        if not commit:
+            stmt = select(Commit).where(Commit.id.startswith(commit_id))
+            result = await db_session.execute(stmt)
+            commits = list(result.scalars().all())
+
+            if len(commits) == 0:
+                typer.echo(f"[!] Commit not found: {commit_id}")
+                typer.echo("[*] Use 'agentflow log' to see available commits.")
+                raise typer.Exit(1)
+            elif len(commits) > 1:
+                typer.echo(f"[!] Ambiguous commit ID. Multiple commits match:")
+                for c in commits:
+                    typer.echo(f"  {c.id}")
+                raise typer.Exit(1)
+            else:
+                commit = commits[0]
+
+        # Get related data
+        session = await commit.get_session(db_session)
+        actions = await commit.get_actions(db_session)
+
+        # Get workspace separately to avoid lazy loading issues
+        workspace = await Workspace.get_by_id(db_session, session.workspace_id)
+
+        # Display commit details
+        typer.echo(f"[*] Commit: {commit.id}")
+        typer.echo(f"[*] Message: {commit.message}")
+        if commit.description:
+            typer.echo(f"[*] Description: {commit.description}")
+        typer.echo(f"[*] Workspace: {workspace.name}")
+        typer.echo(f"[*] Session: {session.task}")
+
+        duration_str = format_duration(commit.duration_seconds) if commit.duration_seconds else "N/A"
+        typer.echo(f"[*] Duration: {duration_str}")
+
+        created_str = format_timestamp(commit.created_at)
+        time_ago = format_relative_time(commit.created_at)
+        typer.echo(f"[*] Created at: {created_str} ({time_ago})")
+
+        if commit.parent_id:
+            parent = await Commit.get_by_id(db_session, commit.parent_id)
+            if parent:
+                typer.echo(f"[*] Parent: {parent.id} {parent.short_message}")
+            else:
+                typer.echo(f"[*] Parent: {commit.parent_id} (not found)")
+        else:
+            typer.echo("[*] Parent: None (this is the first commit in this workspace)")
+
+        # Display actions
+        if actions:
+            typer.echo(f"[*] Actions logged ({len(actions)}):")
+            for action in actions:
+                action_time = format_timestamp(action.timestamp)
+                if action.action_type:
+                    typer.echo(f"  • [{action.action_type}] {action.description} ({action_time})")
+                else:
+                    typer.echo(f"  • {action.description} ({action_time})")
+        else:
+            typer.echo("[*] No actions logged during this session.")
+
+    await close_db()
 
 
 @app.command()
