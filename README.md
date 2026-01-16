@@ -17,13 +17,13 @@ AgentFlow is a workflow management system designed to help AI agents track and m
 ## Installation
 
 ```bash
-pip install agentflow
+pip install agentflow-cli
 ```
 
 Or using [uv](https://github.com/astral-sh/uv):
 
 ```bash
-uv pip install agentflow
+uv pip install agentflow-cli
 ```
 
 ## Quick Start
