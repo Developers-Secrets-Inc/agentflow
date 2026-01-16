@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, List
 
-from sqlalchemy import String, DateTime, Text, ForeignKey, Integer
+from sqlalchemy import String, DateTime, Text, ForeignKey, Integer, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentflow.db.base import Base
@@ -92,7 +92,7 @@ class Commit(Base):
         Returns:
             List of commits ordered by creation date (newest first)
         """
-        stmt = cls.query().filter(  # type: ignore[attr-defined]
+        stmt = select(cls).where(
             cls.workspace_id == workspace_id
         ).order_by(cls.created_at.desc())
 
@@ -117,7 +117,7 @@ class Commit(Base):
         Returns:
             Most recent commit or None if no commits exist
         """
-        stmt = cls.query().filter(  # type: ignore[attr-defined]
+        stmt = select(cls).where(
             cls.workspace_id == workspace_id
         ).order_by(cls.created_at.desc()).limit(1)
 
@@ -147,7 +147,7 @@ class Commit(Base):
         """
         from agentflow.entities.action import Action
 
-        stmt = Action.query().filter(  # type: ignore[attr-defined]
+        stmt = select(Action).where(
             Action.session_id == self.session_id
         ).order_by(Action.timestamp)
 
