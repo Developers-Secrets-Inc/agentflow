@@ -686,5 +686,89 @@ async def _session_abort_async() -> None:
     await close_db()
 
 
+@session_app.command("log")
+def session_log(
+    description: str = typer.Argument(..., help="Action description"),
+    action_type: str = typer.Option(None, "--type", "-t", help="Action type"),
+) -> None:
+    """Log an action during the current session."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _session_log_sync(description, action_type)
+
+
+def _session_log_sync(description: str, action_type: str | None) -> None:
+    """Log action synchronously.
+
+    Args:
+        description: Action description
+        action_type: Optional action type
+    """
+    try:
+        asyncio.run(_session_log_async(description, action_type))
+    except Exception as e:
+        typer.echo(f"[!] Failed to log action: {e}")
+        raise typer.Exit(1)
+
+
+async def _session_log_async(description: str, action_type: str | None) -> None:
+    """Log action asynchronously.
+
+    Args:
+        description: Action description
+        action_type: Optional action type
+    """
+    # Get current session from state
+    session_id = get_current_session_id()
+    if not session_id:
+        typer.echo("[!] No active session. Use 'agentflow session start <task>' to begin.")
+        raise typer.Exit(1)
+
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Get session by ID
+        session = await Session.get_by_id(db_session, session_id)
+        if not session:
+            typer.echo("[!] Session not found in database. State may be corrupted.")
+            typer.echo("[!] Use 'agentflow session start <task>' to create a new session.")
+            raise typer.Exit(1)
+
+        # Check if session is active
+        if not session.is_active:
+            typer.echo(f"[!] Session is not active (status: {session.status}).")
+            typer.echo("[!] Use 'agentflow session start <task>' to create a new session.")
+            raise typer.Exit(1)
+
+        # Log the action
+        action_type_str = action_type or ""
+        await session.log_action(
+            db_session,
+            description=description,
+            action_type=action_type_str,
+        )
+        await db_session.commit()
+
+        # Show confirmation
+        if action_type:
+            typer.echo(f"[*] Action logged: \"{description}\" (type: {action_type})")
+        else:
+            typer.echo(f"[*] Action logged: \"{description}\"")
+
+    await close_db()
+
+
 if __name__ == "__main__":
     app()
