@@ -6,8 +6,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import String, DateTime, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import String, DateTime, Text, select
+from sqlalchemy.orm import Mapped, mapped_column
 
 from agentflow.db.base import Base
 from agentflow.utils.id_generator import generate_id
@@ -23,12 +23,7 @@ class Action(Base):
     description: Mapped[str] = mapped_column(String, nullable=False)
     action_type: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    metadata: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Relationships
-    session: Mapped["Session"] = relationship(  # type: ignore[name-defined]
-        back_populates="actions",
-    )
+    meta_data: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     @classmethod
     def create(
@@ -54,12 +49,12 @@ class Action(Base):
             session_id=session_id,
             description=description,
             action_type=action_type,
-            metadata=json.dumps(metadata) if metadata else None,
+            meta_data=json.dumps(metadata) if metadata else None,
         )
         return action
 
     @classmethod
-    def list_for_session(cls, db, session_id: str) -> list["Action"]:
+    async def list_for_session(cls, db, session_id: str) -> list["Action"]:
         """List all actions for a session.
 
         Args:
@@ -69,12 +64,8 @@ class Action(Base):
         Returns:
             List of actions ordered by timestamp
         """
-        stmt = (
-            cls.query()  # type: ignore[attr-defined]
-            .filter(cls.session_id == session_id)
-            .order_by(cls.timestamp)
-        )
-        result = db.execute(stmt)
+        stmt = select(cls).where(cls.session_id == session_id).order_by(cls.timestamp)
+        result = await db.execute(stmt)
         return list(result.scalars().all())
 
     def get_metadata(self) -> dict[str, Any] | None:
@@ -83,8 +74,8 @@ class Action(Base):
         Returns:
             Metadata dict or None
         """
-        if self.metadata:
-            return json.loads(self.metadata)
+        if self.meta_data:
+            return json.loads(self.meta_data)
         return None
 
     def __repr__(self) -> str:

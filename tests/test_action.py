@@ -41,7 +41,7 @@ async def test_create_action_without_metadata(db_session):
     await db_session.refresh(action)
 
     assert action.id is not None
-    assert action.metadata is None
+    assert action.meta_data is None
     assert action.get_metadata() is None
 
 
