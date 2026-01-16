@@ -8,12 +8,13 @@ import typer
 
 from agentflow.config import (
     config_exists,
+    get_current_workspace_id,
     get_database_config,
     save_database_config,
     save_user,
     set_current_workspace,
 )
-from agentflow.config.database import DatabaseSettings
+from agentflow.config.database import DatabaseSettings, set_database_settings
 from agentflow.db.base import init_db, close_db
 from agentflow.entities import Workspace
 from agentflow.db.session import DatabaseSession, get_db
@@ -23,6 +24,9 @@ app = typer.Typer(help="AgentFlow - Git-like workflow management for AI agents")
 
 config_app = typer.Typer(help="Configuration management")
 app.add_typer(config_app, name="config")
+
+workspace_app = typer.Typer(help="Workspace management")
+app.add_typer(workspace_app, name="workspace")
 
 
 @app.command()
@@ -225,6 +229,248 @@ def config_test() -> None:
         typer.echo("[*] Connection successful!")
     else:
         raise typer.Exit(1)
+
+
+@workspace_app.command("current")
+def workspace_current() -> None:
+    """Show the current workspace."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    current_workspace_id = get_current_workspace_id()
+    if not current_workspace_id:
+        typer.echo("[!] No workspace selected. Use 'agentflow workspace switch <name>' first.")
+        raise typer.Exit(1)
+
+    _workspace_current_sync(current_workspace_id)
+
+
+def _workspace_current_sync(workspace_id: str) -> None:
+    """Show workspace details synchronously.
+
+    Args:
+        workspace_id: Workspace ID to display
+    """
+    try:
+        asyncio.run(_workspace_current_async(workspace_id))
+    except Exception as e:
+        typer.echo(f"[!] Failed to retrieve workspace: {e}")
+        raise typer.Exit(1)
+
+
+async def _workspace_current_async(workspace_id: str) -> None:
+    """Show workspace details asynchronously.
+
+    Args:
+        workspace_id: Workspace ID to display
+    """
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    # Initialize database with config settings
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+        workspace = await Workspace.get_by_id(db_session, workspace_id)
+
+        if not workspace:
+            typer.echo(f"[!] Workspace with ID '{workspace_id}' not found.")
+            typer.echo("[!] Use 'agentflow workspace list' to see available workspaces.")
+            raise typer.Exit(1)
+
+        typer.echo("[*] Current workspace:")
+        typer.echo(f"  Name: {workspace.name}")
+        typer.echo(f"  ID: {workspace.id}")
+        if workspace.description:
+            typer.echo(f"  Description: {workspace.description}")
+        typer.echo(f"  Created at: {workspace.created_at}")
+
+    await close_db()
+
+
+@workspace_app.command("list")
+def workspace_list() -> None:
+    """List all workspaces."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _workspace_list_sync()
+
+
+def _workspace_list_sync() -> None:
+    """List workspaces synchronously."""
+    try:
+        asyncio.run(_workspace_list_async())
+    except Exception as e:
+        typer.echo(f"[!] Failed to list workspaces: {e}")
+        raise typer.Exit(1)
+
+
+async def _workspace_list_async() -> None:
+    """List workspaces asynchronously."""
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+        workspaces = await Workspace.list_all(db_session)
+        current_workspace_id = get_current_workspace_id()
+
+        if not workspaces:
+            typer.echo("[*] No workspaces found. Create one with 'agentflow workspace create <name>'.")
+            return
+
+        typer.echo("[*] Workspaces:")
+        for workspace in workspaces:
+            current_marker = " (current)" if workspace.id == current_workspace_id else ""
+            desc = f" - {workspace.description}" if workspace.description else ""
+            typer.echo(f"  {workspace.name}{current_marker}")
+            typer.echo(f"    ID: {workspace.id}{desc}")
+
+    await close_db()
+
+
+@workspace_app.command("create")
+def workspace_create(
+    name: str = typer.Argument(..., help="Workspace name"),
+    description: str = typer.Option(None, "--description", "-d", help="Workspace description"),
+) -> None:
+    """Create a new workspace."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _workspace_create_sync(name, description)
+
+
+def _workspace_create_sync(name: str, description: str | None) -> None:
+    """Create workspace synchronously.
+
+    Args:
+        name: Workspace name
+        description: Optional description
+    """
+    try:
+        asyncio.run(_workspace_create_async(name, description))
+    except Exception as e:
+        typer.echo(f"[!] Failed to create workspace: {e}")
+        raise typer.Exit(1)
+
+
+async def _workspace_create_async(name: str, description: str | None) -> None:
+    """Create workspace asynchronously.
+
+    Args:
+        name: Workspace name
+        description: Optional description
+    """
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Check if workspace with same name exists
+        existing = await Workspace.get_by_name(db_session, name)
+        if existing:
+            typer.echo(f"[!] Workspace '{name}' already exists.")
+            raise typer.Exit(1)
+
+        # Create workspace
+        workspace = await Workspace.create(db_session, name, description)
+
+        # Set as current if it's the first workspace
+        all_workspaces = await Workspace.list_all(db_session)
+        if len(all_workspaces) == 1:
+            set_current_workspace(workspace.id)
+            typer.echo("[*] This is your first workspace. Set as current.")
+
+        typer.echo(f"[*] Workspace '{name}' created (id: {workspace.id})")
+
+    await close_db()
+
+
+@workspace_app.command("switch")
+def workspace_switch(
+    identifier: str = typer.Argument(..., help="Workspace ID or name"),
+) -> None:
+    """Switch to a different workspace."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _workspace_switch_sync(identifier)
+
+
+def _workspace_switch_sync(identifier: str) -> None:
+    """Switch workspace synchronously.
+
+    Args:
+        identifier: Workspace ID or name
+    """
+    try:
+        asyncio.run(_workspace_switch_async(identifier))
+    except Exception as e:
+        typer.echo(f"[!] Failed to switch workspace: {e}")
+        raise typer.Exit(1)
+
+
+async def _workspace_switch_async(identifier: str) -> None:
+    """Switch workspace asynchronously.
+
+    Args:
+        identifier: Workspace ID or name
+    """
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Try to find workspace by ID, then by name
+        workspace = await Workspace.get_by_id(db_session, identifier)
+        if not workspace:
+            workspace = await Workspace.get_by_name(db_session, identifier)
+
+        if not workspace:
+            typer.echo(f"[!] Workspace '{identifier}' not found.")
+            typer.echo("[!] Use 'agentflow workspace list' to see available workspaces.")
+            raise typer.Exit(1)
+
+        # Set as current workspace
+        set_current_workspace(workspace.id)
+        typer.echo(f"[*] Switched to workspace: {workspace.name}")
+
+    await close_db()
 
 
 if __name__ == "__main__":
