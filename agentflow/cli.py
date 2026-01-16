@@ -1,6 +1,7 @@
 """AgentFlow CLI - Main entry point."""
 
 import asyncio
+import datetime
 from pathlib import Path
 
 import questionary
@@ -16,9 +17,15 @@ from agentflow.config import (
 )
 from agentflow.config.database import DatabaseSettings, set_database_settings
 from agentflow.db.base import init_db, close_db
-from agentflow.entities import Workspace
+from agentflow.entities import Workspace, Session
 from agentflow.db.session import DatabaseSession, get_db
 from agentflow.utils.id_generator import generate_id
+from agentflow.utils.state import (
+    get_current_session_id,
+    set_current_session,
+    clear_current_session,
+)
+from agentflow.utils.formatters import format_duration, format_timestamp
 
 app = typer.Typer(help="AgentFlow - Git-like workflow management for AI agents")
 
@@ -27,6 +34,9 @@ app.add_typer(config_app, name="config")
 
 workspace_app = typer.Typer(help="Workspace management")
 app.add_typer(workspace_app, name="workspace")
+
+session_app = typer.Typer(help="Session management")
+app.add_typer(session_app, name="session")
 
 
 @app.command()
@@ -469,6 +479,209 @@ async def _workspace_switch_async(identifier: str) -> None:
         # Set as current workspace
         set_current_workspace(workspace.id)
         typer.echo(f"[*] Switched to workspace: {workspace.name}")
+
+    await close_db()
+
+
+@session_app.command("start")
+def session_start(
+    task: str = typer.Argument(..., help="Task description for this session"),
+) -> None:
+    """Start a new work session."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _session_start_sync(task)
+
+
+def _session_start_sync(task: str) -> None:
+    """Start session synchronously.
+
+    Args:
+        task: Task description
+    """
+    try:
+        asyncio.run(_session_start_async(task))
+    except Exception as e:
+        typer.echo(f"[!] Failed to start session: {e}")
+        raise typer.Exit(1)
+
+
+async def _session_start_async(task: str) -> None:
+    """Start session asynchronously.
+
+    Args:
+        task: Task description
+    """
+    # Check workspace is selected
+    workspace_id = get_current_workspace_id()
+    if not workspace_id:
+        typer.echo("[!] No workspace selected. Use 'agentflow workspace switch <name>' first.")
+        raise typer.Exit(1)
+
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Check if there's an active session
+        active_session = await Session.get_active(db_session, workspace_id)
+        if active_session:
+            typer.echo("[!] An active session already exists for this workspace.")
+            typer.echo("[!] Use 'agentflow session status' to view it or 'agentflow session abort' to end it.")
+            raise typer.Exit(1)
+
+        # Create new session
+        session = await Session.create(db_session, workspace_id, task)
+
+        # Set as current session in state
+        set_current_session(session.id)
+
+        typer.echo(f"[*] Session started: {session.id}")
+        typer.echo(f"[*] Task: {task}")
+        typer.echo(f"[*] Started at: {format_timestamp(session.started_at)}")
+
+    await close_db()
+
+
+@session_app.command("status")
+def session_status() -> None:
+    """Show current session status."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _session_status_sync()
+
+
+def _session_status_sync() -> None:
+    """Show session status synchronously."""
+    try:
+        asyncio.run(_session_status_async())
+    except Exception as e:
+        typer.echo(f"[!] Failed to get session status: {e}")
+        raise typer.Exit(1)
+
+
+async def _session_status_async() -> None:
+    """Show session status asynchronously."""
+    # Get current session from state
+    session_id = get_current_session_id()
+    if not session_id:
+        typer.echo("[!] No active session. Use 'agentflow session start <task>' to begin.")
+        raise typer.Exit(1)
+
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Get session by ID
+        session = await Session.get_by_id(db_session, session_id)
+        if not session:
+            typer.echo(f"[!] Session not found in database. State may be corrupted.")
+            typer.echo("[!] Use 'agentflow session start <task>' to create a new session.")
+            raise typer.Exit(1)
+
+        # Calculate duration if active
+        if session.is_active:
+            duration_seconds = int((datetime.datetime.utcnow() - session.started_at).total_seconds())
+            duration_str = format_duration(duration_seconds)
+        else:
+            duration_seconds = session.duration_seconds
+            duration_str = format_duration(duration_seconds) if duration_seconds else "N/A"
+
+        typer.echo("[*] Current session:")
+        typer.echo(f"  ID: {session.id}")
+        typer.echo(f"  Task: {session.task}")
+        typer.echo(f"  Status: {session.status}")
+        typer.echo(f"  Started at: {format_timestamp(session.started_at)}")
+        typer.echo(f"  Duration: {duration_str}")
+
+    await close_db()
+
+
+@session_app.command("abort")
+def session_abort() -> None:
+    """Abort the current session."""
+    if not config_exists():
+        typer.echo("[!] No configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    _session_abort_sync()
+
+
+def _session_abort_sync() -> None:
+    """Abort session synchronously."""
+    try:
+        asyncio.run(_session_abort_async())
+    except Exception as e:
+        typer.echo(f"[!] Failed to abort session: {e}")
+        raise typer.Exit(1)
+
+
+async def _session_abort_async() -> None:
+    """Abort session asynchronously."""
+    # Get current session from state
+    session_id = get_current_session_id()
+    if not session_id:
+        typer.echo("[!] No active session. Use 'agentflow session start <task>' to begin.")
+        raise typer.Exit(1)
+
+    db_config = get_database_config()
+    if not db_config:
+        typer.echo("[!] No database configuration found. Run 'agentflow init' first.")
+        raise typer.Exit(1)
+
+    # Set database settings from config
+    set_database_settings(db_config)
+
+    await init_db()
+
+    async with get_db() as db:
+        db_session = DatabaseSession(db.session)
+
+        # Get session by ID
+        session = await Session.get_by_id(db_session, session_id)
+        if not session:
+            typer.echo(f"[!] Session not found in database. State may be corrupted.")
+            raise typer.Exit(1)
+
+        # Check if session is active
+        if not session.is_active:
+            typer.echo(f"[!] Session is not active (status: {session.status}).")
+            typer.echo("[!] Use 'agentflow session start <task>' to create a new session.")
+            raise typer.Exit(1)
+
+        # Abort the session
+        await session.abort(db_session)
+
+        # Clear from state
+        clear_current_session()
+
+        # Show final duration
+        duration_seconds = session.duration_seconds
+        duration_str = format_duration(duration_seconds) if duration_seconds else "0s"
+
+        typer.echo(f"[*] Session aborted: {session.id}")
+        typer.echo(f"[*] Duration: {duration_str}")
 
     await close_db()
 
