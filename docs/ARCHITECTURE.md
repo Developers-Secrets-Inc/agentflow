@@ -223,7 +223,7 @@
    ↓
 3. tRPC makes type-safe call to Hono API
    ↓
-4. API queries SQLite, returns data
+4. API queries PostgreSQL, returns data
    ↓
 5. Dashboard displays with real-time updates
    ↓
